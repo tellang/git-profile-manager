@@ -19,7 +19,6 @@ function Show-InteractiveMenu {
 
         for ($i = 0; $i -lt $Options.Length; $i++) {
             $optionText = $Options[$i]
-            # '저장'이 포함된 메뉴에 아이콘 추가
             if ($optionText -like "*에 저장*") {
                 $optionText = "💾 $optionText"
             }
@@ -44,6 +43,7 @@ function Show-InteractiveMenu {
 
 # --- 메인 애플리케이션 루프 ---
 while ($true) {
+    # 최근 사용 프로필 이름 읽어오기
     $lastProfileFile = ".last_profile"
     $lastAppliedProfile = "없음"
     if (Test-Path $lastProfileFile) {
@@ -53,14 +53,16 @@ while ($true) {
     # --- 동적 메인 메뉴 구성 ---
     $mainMenuOptions = [System.Collections.Generic.List[string]]@(
         "현재 설정 보기",
+        "이름/이메일 직접 설정",
         "프로필 불러와 적용하기",
         "현재 설정을 새 프로필로 저장"
     )
     # 최근 사용 프로필이 있을 때만 '현재 프로필에 저장' 메뉴 추가
     if ($lastAppliedProfile -ne "없음") {
-        $mainMenuOptions.Insert(2, "현재 프로필 '$lastAppliedProfile'에 저장")
+        $mainMenuOptions.Insert(3, "현재 프로필 '$lastAppliedProfile'에 저장")
     }
-    $mainMenuOptions.AddRange(@(
+    # [수정된 부분] 타입을 [string[]]으로 명시
+    $mainMenuOptions.AddRange([string[]]@(
         "직전 설정으로 복구",
         "Git 글로벌 설정 초기화",
         "종료"
@@ -68,13 +70,13 @@ while ($true) {
 
     # 메뉴 표시 및 사용자 선택
     $rawChoice = Show-InteractiveMenu -Title "Git 프로필 관리자" -Options $mainMenuOptions -LastProfile $lastAppliedProfile
-    # 아이콘 제거
     $choice = if ($rawChoice) { $rawChoice.Replace("💾 ", "") } else { $null }
 
     if (-not $choice -or $choice -eq "종료") { break }
 
     # --- 자동 백업 로직 ---
     $actionsThatChangeConfig = @(
+        "이름/이메일 직접 설정",
         "프로필 불러와 적용하기",
         "직전 설정으로 복구",
         "Git 글로벌 설정 초기화"
@@ -92,7 +94,6 @@ while ($true) {
     Clear-Host
     switch ($choice) {
         "현재 설정 보기" {
-            # ... (이전과 동일) ...
             Write-Host "`n======================================================="
             Write-Host "                현재 Git 설정 전체 목록"
             Write-Host "======================================================="
@@ -110,23 +111,55 @@ while ($true) {
             }
             Write-Host "`n======================================================="
         }
+        "이름/이메일 직접 설정" {
+            Write-Host "`n글로벌 user.name과 user.email을 직접 설정합니다."
+            $currentName = git config --global user.name
+            $currentEmail = git config --global user.email
+
+            $newName = Read-Host "`n새로운 사용자 이름을 입력하세요 (현재: $currentName). Enter를 누르면 변경하지 않습니다"
+            $newEmail = Read-Host "새로운 이메일을 입력하세요 (현재: $currentEmail). Enter를 누르면 변경하지 않습니다"
+
+            if (-not [string]::IsNullOrWhiteSpace($newName)) {
+                git config --global user.name "$newName"
+                Write-Host "✅ 사용자 이름을 '$newName'(으)로 설정했습니다." -ForegroundColor Green
+            }
+            if (-not [string]::IsNullOrWhiteSpace($newEmail)) {
+                git config --global user.email $newEmail
+                Write-Host "✅ 이메일을 '$newEmail'(으)로 설정했습니다." -ForegroundColor Green
+            }
+            if ([string]::IsNullOrWhiteSpace($newName) -and [string]::IsNullOrWhiteSpace($newEmail)) {
+                Write-Host "변경된 내용이 없습니다." -ForegroundColor Yellow
+            }
+        }
         "프로필 불러와 적용하기" {
-            # ... (이전과 동일) ...
             $profilesDir = "profiles"
             if (-not (Test-Path $profilesDir)) { New-Item -ItemType Directory -Path $profilesDir | Out-Null }
             $profileFiles = Get-ChildItem -Path $profilesDir -Filter "*.conf" | Where-Object { $_.Name -ne 'backup.conf' }
-            if ($profileFiles.Count -eq 0) { Write-Host "❌ '$profilesDir' 폴더에 저장된 프로필 파일(.conf)이 없습니다." -ForegroundColor Red; break }
+            
+            if ($profileFiles.Count -eq 0) {
+                Write-Host "❌ '$profilesDir' 폴더에 저장된 프로필 파일(.conf)이 없습니다." -ForegroundColor Red; break 
+            }
+
             $profileNames = $profileFiles.BaseName | Sort-Object
             $selectedProfileName = Show-InteractiveMenu -Title "적용할 프로필을 선택하세요 (취소: ESC)" -Options $profileNames
+
             if ($selectedProfileName) {
                 $selectedFile = $profileFiles | Where-Object { $_.BaseName -eq $selectedProfileName }
                 Write-Host "`n'$($selectedFile.BaseName)' 프로필을 적용합니다..."
+                $globalConfigFile = git config --global --get-path
+                if (Test-Path $globalConfigFile) { Clear-Content $globalConfigFile }
                 (Get-Content $selectedFile.FullName) | ForEach-Object {
-                    if ($_ -match '(.+)=(.+)') { $key = $matches[1].Trim(); $value = $matches[2].Trim(); git config --global $key $value; Write-Host "  set: $key" }
+                    if ($_ -match '(.+)=(.+)') {
+                        $key = $matches[1].Trim(); $value = $matches[2].Trim()
+                        git config --global $key $value
+                        Write-Host "  set: $key"
+                    }
                 }
                 Set-Content -Path $lastProfileFile -Value $selectedProfileName
                 Write-Host "✅ 적용 완료." -ForegroundColor Green
-            } else { Write-Host "`n프로필 적용을 취소했습니다." -ForegroundColor Yellow }
+            } else {
+                Write-Host "`n프로필 적용을 취소했습니다." -ForegroundColor Yellow
+            }
         }
         "현재 프로필 '$lastAppliedProfile'에 저장" {
             $profilesDir = "profiles"
@@ -136,7 +169,6 @@ while ($true) {
                 Write-Host "❌ 덮어쓸 프로필 파일('$lastAppliedProfile.conf')을 찾을 수 없습니다." -ForegroundColor Red; break
             }
             
-            # 파일 수정 전/후를 비교하기 위해 이전 내용 저장
             $oldProfileContent = Get-Content $profileToOverwriteFile
             $newProfileContent = git config --global --list
 
@@ -144,11 +176,9 @@ while ($true) {
                 Write-Host "❌ 저장할 글로벌 설정이 없습니다." -ForegroundColor Red; break
             }
 
-            # 파일 덮어쓰기
             Set-Content -Path $profileToOverwriteFile -Value $newProfileContent
             Write-Host "✅ '$lastAppliedProfile.conf' 프로필을 현재 설정으로 저장했습니다." -ForegroundColor Green
 
-            # 프로필 파일의 변경 내역 표시
             $oldProfileData = @{}; $oldProfileContent | ForEach-Object { if ($_ -match '(.+)=(.+)') { $oldProfileData[$matches[1].Trim()] = $matches[2].Trim() } }
             $newProfileData = @{}; $newProfileContent | ForEach-Object { if ($_ -match '(.+)=(.+)') { $newProfileData[$matches[1].Trim()] = $matches[2].Trim() } }
             $allProfileKeys = ($oldProfileData.Keys + $newProfileData.Keys) | Sort-Object -Unique
@@ -172,14 +202,17 @@ while ($true) {
             Write-Host "`n======================================================="
         }
         "현재 설정을 새 프로필로 저장" {
-            # ... (이전과 동일) ...
             $profilesDir = "profiles"
             if (-not (Test-Path $profilesDir)) { New-Item -ItemType Directory -Path $profilesDir | Out-Null }
             Write-Host "`n현재 모든 글로벌 설정을 저장합니다..."
             $allGlobalConfig = git config --global --list
-            if (-not $allGlobalConfig) { Write-Host "❌ 저장할 글로벌 설정이 없습니다." -ForegroundColor Red; break }
+            if (-not $allGlobalConfig) {
+                Write-Host "❌ 저장할 글로벌 설정이 없습니다." -ForegroundColor Red; break
+            }
             $profileName = Read-Host "`n저장할 프로필의 파일 이름을 입력하세요 (미입력 시 자동 이름 생성)"
-            if ([string]::IsNullOrWhiteSpace($profileName)) { $i = 1; while (Test-Path "$profilesDir/새 설정 $i.conf") { $i++ }; $profileName = "새 설정 $i" }
+            if ([string]::IsNullOrWhiteSpace($profileName)) {
+                $i = 1; while (Test-Path "$profilesDir/새 설정 $i.conf") { $i++ }; $profileName = "새 설정 $i"
+            }
             $filePath = Join-Path -Path $profilesDir -ChildPath "$profileName.conf"
             Set-Content -Path $filePath -Value $allGlobalConfig
             Write-Host "✅ '$profileName.conf' 이름으로 모든 글로벌 설정을 '$profilesDir' 폴더에 저장했습니다." -ForegroundColor Green
@@ -190,46 +223,52 @@ while ($true) {
             Write-Host "======================================================="
         }
         "직전 설정으로 복구" {
-            # ... (이전과 동일) ...
             $profilesDir = "profiles"
             $backupFile = "$profilesDir/backup.conf"
-            if (-not (Test-Path $backupFile)) { Write-Host "❌ 복구할 백업 파일이 없습니다." -ForegroundColor Red; break }
+            if (-not (Test-Path $backupFile)) {
+                Write-Host "❌ 복구할 백업 파일이 없습니다." -ForegroundColor Red; break
+            }
             Write-Host "`n직전 설정('backup.conf')으로 복구합니다..."
+            $globalConfigFile = git config --global --get-path
+            if (Test-Path $globalConfigFile) { Clear-Content $globalConfigFile }
             (Get-Content $backupFile) | ForEach-Object {
-                if ($_ -match '(.+)=(.+)') { $key = $matches[1].Trim(); $value = $matches[2].Trim(); git config --global $key $value; Write-Host "  set: $key" }
+                if ($_ -match '(.+)=(.+)') {
+                    $key = $matches[1].Trim(); $value = $matches[2].Trim()
+                    git config --global $key $value
+                    Write-Host "  set: $key"
+                }
             }
             Write-Host "✅ 복구 완료." -ForegroundColor Green
         }
         "Git 글로벌 설정 초기화" {
-            # ... (이전과 동일) ...
-            Write-Host "`nGit 글로벌 설정을 초기화합니다..."
-            $globalConfigFile = git config --global --get-path
-            if (Test-Path $globalConfigFile) { Clear-Content $globalConfigFile }
-            Write-Host "✅ 모든 글로벌 설정을 초기화했습니다." -ForegroundColor Green
+            Write-Host "`nGit 글로벌 설정을 초기화합니다 (user 섹션)..."
+            git config --global --remove-section user 2>$null
+            Write-Host "✅ user.name, user.email 설정을 초기화했습니다." -ForegroundColor Green
         }
     }
 
-    # --- Git 설정 변경 내역 출력 ---
+    # --- 작업 완료 후, 변경 내역 출력 ---
     $actionsThatShowGitDiff = @(
+        "이름/이메일 직접 설정",
         "프로필 불러와 적용하기",
         "직전 설정으로 복구",
         "Git 글로벌 설정 초기화"
     )
     if ($actionsThatShowGitDiff -contains $choice) {
-        # ... (이전과 동일) ...
         $newConfig = @{}; (git config --list) | ForEach-Object { $parts = $_.Split('=', 2); $newConfig[$parts[0]] = $parts[1] }
         $allItems = @(); $allKeys = ($oldConfig.Keys + $newConfig.Keys) | Sort-Object -Unique
         foreach ($key in $allKeys) {
             $item = [PSCustomObject]@{ Section = ($key.Split('.'))[0]; Key = $key; OldValue = $oldConfig[$key]; NewValue = $newConfig[$key]; Status = '' }
-            $inOld = $oldConfig.ContainsKey($key); $inNew = $newConfig.ContainsKey($key)
+            $inOld = $oldConfig.ContainsKey($key); $inNew = $oldConfig.ContainsKey($key)
             if ($inOld -and $inNew) { if ($item.OldValue -eq $item.NewValue) { $item.Status = 'Unchanged' } else { $item.Status = 'Modified' } }
             elseif ($inOld -and !$inNew) { $item.Status = 'Deleted' } else { $item.Status = 'Added' }
             $allItems += $item
         }
         Write-Host "`n======================================================="; Write-Host "           작업 완료 후, Git 설정 변경 내역"; Write-Host "======================================================="
         $changedItemsCount = ($allItems | Where-Object { $_.Status -ne 'Unchanged' }).Count
-        if ($changedItemsCount -eq 0) { Write-Host "`n변경된 내용이 없습니다." -ForegroundColor Yellow }
-        else {
+        if ($changedItemsCount -eq 0) {
+             Write-Host "`n변경된 내용이 없습니다." -ForegroundColor Yellow
+        } else {
             foreach ($group in ($allItems | Where-Object { $_.Status -ne 'Unchanged' } | Group-Object -Property Section | Sort-Object Name)) {
                 Write-Host "`n [ $($group.Name) ]" -ForegroundColor Cyan
                 foreach ($item in $group.Group) {
